@@ -1,3 +1,85 @@
+package com.example.adgroup.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.ldap.core.LdapTemplate;
+import org.springframework.ldap.core.support.LdapContextSource;
+
+@Configuration
+public class LdapConfig {
+
+    @Bean
+    public LdapContextSource contextSource(
+            @Value("${spring.ldap.urls}") String url,
+            @Value("${spring.ldap.base}") String base,
+            @Value("${spring.ldap.username}") String username,
+            @Value("${spring.ldap.password}") String password) {
+
+        LdapContextSource source = new LdapContextSource();
+        source.setUrl(url);
+        source.setBase(base);
+        source.setUserDn(username);
+        source.setPassword(password);
+
+        // Force binary handling for these attributes
+        source.setBaseEnvironmentProperties(Map.of(
+            "java.naming.ldap.attributes.binary", "objectGUID objectSid"
+        ));
+
+        return source;
+    }
+
+    @Bean
+    public LdapTemplate ldapTemplate(LdapContextSource contextSource) {
+        return new LdapTemplate(contextSource);
+    }
+}
+
+private String convertObjectGuidToString(Attributes attrs) {
+    try {
+        var attr = attrs.get("objectGUID");
+        if (attr == null) return null;
+
+        Object value = attr.get();
+        if (value == null) return null;
+
+        byte[] bytes;
+
+        // Handle both possible return types from LDAP provider
+        if (value instanceof byte[]) {
+            bytes = (byte[]) value;
+        } else if (value instanceof String) {
+            // Some LDAP providers return it as a raw binary string
+            bytes = ((String) value).getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        } else {
+            throw new IllegalArgumentException("Unexpected objectGUID type: " + value.getClass().getName());
+        }
+
+        if (bytes.length != 16) {
+            throw new IllegalArgumentException("objectGUID must be 16 bytes, got: " + bytes.length);
+        }
+
+        // Reorder bytes: AD uses mixed-endian, UUID needs big-endian
+        byte[] reordered = new byte[]{
+            bytes[3], bytes[2], bytes[1], bytes[0],  // Data1: reverse
+            bytes[5], bytes[4],                       // Data2: reverse
+            bytes[7], bytes[6],                       // Data3: reverse
+            bytes[8], bytes[9],                       // Data4: as-is
+            bytes[10], bytes[11], bytes[12],
+            bytes[13], bytes[14], bytes[15]
+        };
+
+        ByteBuffer bb = ByteBuffer.wrap(reordered);
+        long high = bb.getLong();
+        long low  = bb.getLong();
+
+        return new UUID(high, low).toString();
+
+    } catch (NamingException e) {
+        throw new RuntimeException("Failed to read objectGUID from LDAP attributes", e);
+    }
+}
+
 package com.example.adgroup.model;
 
 public class AdGroupMember {
